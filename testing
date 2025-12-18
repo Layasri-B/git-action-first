@@ -8,22 +8,22 @@ pipeline {
             defaultValue: ''
         )
         string(
-            name: 'github_username',
+            name: 'Layasri-B',
             description: 'Your GitHub username',
             defaultValue: ''
         )
         string(
-            name: 's3_bucket',
+            name: 'aws-repo-backup-v1',
             description: 'S3 bucket name',
             defaultValue: ''
         )
         string(
-            name: 's3_folder',
+            name: 'backup',
             description: 'Folder path in S3 bucket',
             defaultValue: 'repo-backups'
         )
         string(
-            name: 'aws_region',
+            name: 'ap-south-1',
             description: 'AWS Region',
             defaultValue: 'us-east-1'
         )
