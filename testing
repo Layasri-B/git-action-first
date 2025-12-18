@@ -1,0 +1,182 @@
+pipeline {
+    agent any
+    
+    parameters {
+        string(
+            name: 'repository',
+            description: 'Repo names separated by comma (e.g., repo1,repo2)',
+            defaultValue: ''
+        )
+        string(
+            name: 'github_username',
+            description: 'Your GitHub username',
+            defaultValue: ''
+        )
+        password(
+            name: 'github_token',
+            description: 'Your GitHub Personal Access Token (PAT)',
+            defaultValue: ''
+        )
+        string(
+            name: 's3_bucket',
+            description: 'S3 bucket name (e.g., my-backup-bucket)',
+            defaultValue: ''
+        )
+        string(
+            name: 's3_folder',
+            description: 'Folder path in S3 bucket',
+            defaultValue: 'repo-backups'
+        )
+        string(
+            name: 'aws_region',
+            description: 'AWS Region',
+            defaultValue: 'us-east-1'
+        )
+        password(
+            name: 'aws_access_key_id',
+            description: 'AWS Access Key ID',
+            defaultValue: ''
+        )
+        password(
+            name: 'aws_secret_access_key',
+            description: 'AWS Secret Access Key',
+            defaultValue: ''
+        )
+    }
+    
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 2, unit: 'HOURS')
+        ansiColor('xterm')
+    }
+    
+    stages {
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    if (!params.repository?.trim()) {
+                        error "repository parameter is required"
+                    }
+                    if (!params.github_username?.trim()) {
+                        error "github_username parameter is required"
+                    }
+                    if (!params.github_token?.trim()) {
+                        error "github_token parameter is required"
+                    }
+                    if (!params.s3_bucket?.trim()) {
+                        error "s3_bucket parameter is required"
+                    }
+                    if (!params.aws_access_key_id?.trim()) {
+                        error "aws_access_key_id parameter is required"
+                    }
+                    if (!params.aws_secret_access_key?.trim()) {
+                        error "aws_secret_access_key parameter is required"
+                    }
+                }
+            }
+        }
+        
+        stage('Backup Repositories to S3') {
+            steps {
+                script {
+                    sh '''#!/bin/bash
+                        set -e
+                        
+                        # Configure AWS credentials
+                        export AWS_ACCESS_KEY_ID="${aws_access_key_id}"
+                        export AWS_SECRET_ACCESS_KEY="${aws_secret_access_key}"
+                        export AWS_DEFAULT_REGION="${aws_region}"
+                        
+                        # S3 path
+                        s3_path="s3://${s3_bucket}/${s3_folder}"
+                        
+                        # Create working directory
+                        mkdir -p ${WORKSPACE}/github_repo/
+                        cd ${WORKSPACE}/github_repo/
+                        
+                        # Get current date for backup naming
+                        backup_date=$(date '+%Y%m%d_%H%M%S')
+                        
+                        # Loop through repos
+                        for repo in $(echo "${repository}" | tr ',' ' ')
+                        do
+                            repo=$(echo $repo | xargs)  # Trim whitespace
+                            [ -z "$repo" ] && continue
+                            
+                            echo ""
+                            echo "=========================================="
+                            echo "[INFO] Backing up: $repo"
+                            echo "=========================================="
+                            
+                            # Clone repo using HTTPS with token
+                            git clone --mirror "https://${github_username}:${github_token}@github.com/${github_username}/${repo}.git"
+                            
+                            if [ $? -ne 0 ]; then
+                                echo "[ERROR] Failed to clone ${repo}"
+                                exit 1
+                            fi
+                            
+                            # Compress the repo
+                            tar -czf "${repo}_${backup_date}.tar.gz" "${repo}.git"
+                            
+                            if [ $? -ne 0 ]; then
+                                echo "[ERROR] Failed to compress ${repo}"
+                                exit 1
+                            fi
+                            
+                            # Upload to S3
+                            aws s3 cp "${repo}_${backup_date}.tar.gz" "${s3_path}/"
+                            
+                            if [ $? -ne 0 ]; then
+                                echo "[ERROR] Failed to upload ${repo} to S3"
+                                exit 1
+                            fi
+                            
+                            echo "[SUCCESS] Backup completed: ${s3_path}/${repo}_${backup_date}.tar.gz"
+                            
+                            # Cleanup
+                            rm -rf "${repo}.git" "${repo}_${backup_date}.tar.gz"
+                            
+                        done
+                        
+                        echo ""
+                        echo "=========================================="
+                        echo "[SUCCESS] All backups completed!"
+                        echo "=========================================="
+                    '''
+                }
+            }
+        }
+        
+        stage('List Backups') {
+            steps {
+                script {
+                    sh '''#!/bin/bash
+                        export AWS_ACCESS_KEY_ID="${aws_access_key_id}"
+                        export AWS_SECRET_ACCESS_KEY="${aws_secret_access_key}"
+                        export AWS_DEFAULT_REGION="${aws_region}"
+                        
+                        echo ""
+                        echo "=========================================="
+                        echo "Backups in S3:"
+                        echo "=========================================="
+                        aws s3 ls "s3://${s3_bucket}/${s3_folder}/"
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            cleanWs()
+            echo 'Backup process completed'
+        }
+        success {
+            echo 'Successfully backed up repositories to S3!'
+        }
+        failure {
+            echo 'Failed to backup repositories.'
+        }
+    }
+}
