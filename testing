@@ -8,22 +8,22 @@ pipeline {
             defaultValue: ''
         )
         string(
-            name: 'Layasri-B',
+            name: 'github_username',
             description: 'Your GitHub username',
             defaultValue: ''
         )
         string(
-            name: 'aws-repo-backup-v1',
+            name: 's3_bucket',
             description: 'S3 bucket name',
             defaultValue: ''
         )
         string(
-            name: 'backup',
+            name: 's3_folder',
             description: 'Folder path in S3 bucket',
             defaultValue: 'repo-backups'
         )
         string(
-            name: 'ap-south-1',
+            name: 'aws_region',
             description: 'AWS Region',
             defaultValue: 'us-east-1'
         )
@@ -32,7 +32,6 @@ pipeline {
     options {
         disableConcurrentBuilds()
         timeout(time: 2, unit: 'HOURS')
-        ansiColor('xterm')
     }
     
     stages {
@@ -54,20 +53,20 @@ pipeline {
         
         stage('Backup Repositories to S3') {
             steps {
-                // Inject credentials from Jenkins Credentials Store
                 withCredentials([
                     string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN'),
-                    [
-                        $class: 'AmazonWebServicesCredentialsBinding',
+                    usernamePassword(
                         credentialsId: 'aws-credentials',
-                        accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                        secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
-                    ]
+                        usernameVariable: 'AWS_ACCESS_KEY_ID',
+                        passwordVariable: 'AWS_SECRET_ACCESS_KEY'
+                    )
                 ]) {
                     sh '''#!/bin/bash
                         set -e
                         
-                        # AWS credentials are automatically set by withCredentials
+                        # Export AWS credentials
+                        export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}"
+                        export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
                         export AWS_DEFAULT_REGION="${aws_region}"
                         
                         s3_path="s3://${s3_bucket}/${s3_folder}"
@@ -75,43 +74,4 @@ pipeline {
                         mkdir -p ${WORKSPACE}/github_repo/
                         cd ${WORKSPACE}/github_repo/
                         
-                        backup_date=$(date '+%Y%m%d_%H%M%S')
-                        
-                        for repo in $(echo "${repository}" | tr ',' ' ')
-                        do
-                            repo=$(echo $repo | xargs)
-                            [ -z "$repo" ] && continue
-                            
-                            echo ""
-                            echo "=========================================="
-                            echo "[INFO] Backing up: $repo"
-                            echo "=========================================="
-                            
-                            git clone --mirror "https://${github_username}:${GITHUB_TOKEN}@github.com/${github_username}/${repo}.git"
-                            
-                            tar -czf "${repo}_${backup_date}.tar.gz" "${repo}.git"
-                            
-                            aws s3 cp "${repo}_${backup_date}.tar.gz" "${s3_path}/"
-                            
-                            echo "[SUCCESS] Backup completed: ${s3_path}/${repo}_${backup_date}.tar.gz"
-                            
-                            rm -rf "${repo}.git" "${repo}_${backup_date}.tar.gz"
-                        done
-                    '''
-                }
-            }
-        }
-    }
-    
-    post {
-        always {
-            cleanWs()
-        }
-        success {
-            echo 'Successfully backed up repositories to S3!'
-        }
-        failure {
-            echo 'Failed to backup repositories.'
-        }
-    }
-}
+                        backup_date=$(date '+
