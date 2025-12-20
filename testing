@@ -13,6 +13,11 @@ pipeline {
             defaultValue: 'Layasri-B'
         )
         string(
+            name: 'branches_to_delete',
+            description: 'Branch names to delete after backup (comma separated). Leave empty to skip deletion.',
+            defaultValue: ''
+        )
+        string(
             name: 's3_bucket',
             description: 'S3 bucket name',
             defaultValue: 'repo-backup-s3'
@@ -114,6 +119,62 @@ pipeline {
                         
                         echo ""
                         echo "[SUCCESS] All backups completed!"
+                    """
+                }
+            }
+        }
+        
+        stage('Delete Specified Branches') {
+            when {
+                expression { return params.branches_to_delete?.trim() }
+            }
+            steps {
+                withCredentials([
+                    string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')
+                ]) {
+                    sh """#!/bin/bash
+                        set +e
+                        
+                        echo ""
+                        echo "=========================================="
+                        echo "[INFO] Starting branch deletion..."
+                        echo "=========================================="
+                        
+                        for repo in \$(echo "${params.repository}" | tr ',' ' ')
+                        do
+                            repo=\$(echo \$repo | xargs)
+                            [ -z "\$repo" ] && continue
+                            
+                            echo ""
+                            echo "[INFO] Processing repo: \$repo"
+                            echo "----------------------------------------"
+                            
+                            for branch in \$(echo "${params.branches_to_delete}" | tr ',' ' ')
+                            do
+                                branch=\$(echo \$branch | xargs)
+                                [ -z "\$branch" ] && continue
+                                
+                                echo "[INFO] Deleting branch: \$branch"
+                                
+                                response=\$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \\
+                                    -H "Authorization: token \${GITHUB_TOKEN}" \\
+                                    -H "Accept: application/vnd.github.v3+json" \\
+                                    "https://api.github.com/repos/${params.github_username}/\${repo}/git/refs/heads/\${branch}")
+                                
+                                if [ "\$response" == "204" ]; then
+                                    echo "[SUCCESS] Deleted branch: \$branch from \$repo"
+                                elif [ "\$response" == "422" ] || [ "\$response" == "404" ]; then
+                                    echo "[WARNING] Branch \$branch not found in \$repo (may already be deleted)"
+                                else
+                                    echo "[ERROR] Failed to delete branch \$branch from \$repo (HTTP: \$response)"
+                                fi
+                            done
+                        done
+                        
+                        echo ""
+                        echo "=========================================="
+                        echo "[SUCCESS] Branch deletion completed!"
+                        echo "=========================================="
                     """
                 }
             }
