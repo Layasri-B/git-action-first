@@ -14,29 +14,14 @@ pipeline {
         )
         string(
             name: 'branches_to_delete',
-            description: 'Branch names to delete after backup, separated by comma (e.g., feature/old,hotfix/temp)',
+            description: 'Branch names to delete, separated by comma (e.g., feature/old,test-branch)',
             defaultValue: ''
-        )
-        string(
-            name: 's3_bucket',
-            description: 'S3 bucket name',
-            defaultValue: 'repo-backup-s3'
-        )
-        string(
-            name: 's3_folder',
-            description: 'Folder path in S3 bucket',
-            defaultValue: 'repo-backup'
-        )
-        string(
-            name: 'aws_region',
-            description: 'AWS Region',
-            defaultValue: 'eu-north-1'
         )
     }
     
     options {
         disableConcurrentBuilds()
-        timeout(time: 2, unit: 'HOURS')
+        timeout(time: 30, unit: 'MINUTES')
     }
     
     stages {
@@ -49,31 +34,20 @@ pipeline {
                     if (!params.github_username?.trim()) {
                         error "github_username parameter is required"
                     }
-                    if (!params.s3_bucket?.trim()) {
-                        error "s3_bucket parameter is required"
+                    if (!params.branches_to_delete?.trim()) {
+                        error "branches_to_delete parameter is required"
                     }
                 }
             }
         }
         
-        stage('Backup Repositories to S3') {
+        stage('Backup Repository Locally') {
             steps {
                 withCredentials([
-                    string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN'),
-                    usernamePassword(
-                        credentialsId: 'aws-credentials',
-                        usernameVariable: 'AWS_ACCESS_KEY_ID',
-                        passwordVariable: 'AWS_SECRET_ACCESS_KEY'
-                    )
+                    string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')
                 ]) {
                     sh """#!/bin/bash
                         set -e
-                        
-                        export AWS_ACCESS_KEY_ID="\${AWS_ACCESS_KEY_ID}"
-                        export AWS_SECRET_ACCESS_KEY="\${AWS_SECRET_ACCESS_KEY}"
-                        export AWS_DEFAULT_REGION="${params.aws_region}"
-                        
-                        s3_path="s3://${params.s3_bucket}/${params.s3_folder}"
                         
                         mkdir -p \${WORKSPACE}/github_repo/
                         cd \${WORKSPACE}/github_repo/
@@ -94,24 +68,20 @@ pipeline {
                             
                             tar -czf "\${repo}_\${backup_date}.tar.gz" "\${repo}.git"
                             
-                            aws s3 cp "\${repo}_\${backup_date}.tar.gz" "\${s3_path}/"
+                            echo "[SUCCESS] Local backup created: \${repo}_\${backup_date}.tar.gz"
                             
-                            echo "[SUCCESS] Backup: \${s3_path}/\${repo}_\${backup_date}.tar.gz"
-                            
-                            rm -rf "\${repo}.git" "\${repo}_\${backup_date}.tar.gz"
+                            # List the backup file
+                            ls -lh "\${repo}_\${backup_date}.tar.gz"
                         done
                         
                         echo ""
-                        echo "[SUCCESS] All backups completed!"
+                        echo "[SUCCESS] All backups completed locally!"
                     """
                 }
             }
         }
         
         stage('Delete Specified Branches') {
-            when {
-                expression { return params.branches_to_delete?.trim() }
-            }
             steps {
                 withCredentials([
                     string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')
@@ -140,7 +110,6 @@ pipeline {
                                 
                                 echo "[INFO] Deleting branch: \$branch"
                                 
-                                # Delete branch using GitHub API
                                 response=\$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \\
                                     -H "Authorization: token \${GITHUB_TOKEN}" \\
                                     -H "Accept: application/vnd.github.v3+json" \\
@@ -149,9 +118,9 @@ pipeline {
                                 if [ "\$response" == "204" ]; then
                                     echo "[SUCCESS] Deleted branch: \$branch from \$repo"
                                 elif [ "\$response" == "422" ] || [ "\$response" == "404" ]; then
-                                    echo "[WARNING] Branch \$branch not found in \$repo (may already be deleted)"
+                                    echo "[WARNING] Branch \$branch not found in \$repo"
                                 else
-                                    echo "[ERROR] Failed to delete branch \$branch from \$repo (HTTP: \$response)"
+                                    echo "[ERROR] Failed to delete branch \$branch (HTTP: \$response)"
                                 fi
                             done
                         done
@@ -172,7 +141,7 @@ pipeline {
             echo 'Process completed'
         }
         success {
-            echo 'Successfully backed up repositories and deleted branches!'
+            echo 'Successfully backed up and deleted branches!'
         }
         failure {
             echo 'Process failed.'
