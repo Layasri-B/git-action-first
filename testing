@@ -13,19 +13,24 @@ pipeline {
             defaultValue: 'Layasri-B'
         )
         string(
+            name: 'branches_to_delete',
+            description: 'Branch names to delete after backup, separated by comma (e.g., feature/old,hotfix/temp)',
+            defaultValue: ''
+        )
+        string(
             name: 's3_bucket',
             description: 'S3 bucket name',
-            defaultValue: 'aws-repo-backup-v1'
+            defaultValue: 'repo-backup-s3'
         )
         string(
             name: 's3_folder',
             description: 'Folder path in S3 bucket',
-            defaultValue: 'repo-backups'
+            defaultValue: 'repo-backup'
         )
         string(
             name: 'aws_region',
             description: 'AWS Region',
-            defaultValue: 'ap-south-1'
+            defaultValue: 'eu-north-1'
         )
     }
     
@@ -48,22 +53,6 @@ pipeline {
                         error "s3_bucket parameter is required"
                     }
                 }
-            }
-        }
-        
-        stage('Install AWS CLI') {
-            steps {
-                sh """#!/bin/bash
-                    if ! command -v aws &> /dev/null; then
-                        echo "AWS CLI not found. Installing..."
-                        curl "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o "AWSCLIV2.pkg"
-                        sudo installer -pkg AWSCLIV2.pkg -target /
-                        rm AWSCLIV2.pkg
-                    else
-                        echo "AWS CLI already installed"
-                        aws --version
-                    fi
-                """
             }
         }
         
@@ -105,7 +94,7 @@ pipeline {
                             
                             tar -czf "\${repo}_\${backup_date}.tar.gz" "\${repo}.git"
                             
-                            /usr/local/bin/aws s3 cp "\${repo}_\${backup_date}.tar.gz" "\${s3_path}/" || aws s3 cp "\${repo}_\${backup_date}.tar.gz" "\${s3_path}/"
+                            aws s3 cp "\${repo}_\${backup_date}.tar.gz" "\${s3_path}/"
                             
                             echo "[SUCCESS] Backup: \${s3_path}/\${repo}_\${backup_date}.tar.gz"
                             
@@ -118,18 +107,75 @@ pipeline {
                 }
             }
         }
+        
+        stage('Delete Specified Branches') {
+            when {
+                expression { return params.branches_to_delete?.trim() }
+            }
+            steps {
+                withCredentials([
+                    string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')
+                ]) {
+                    sh """#!/bin/bash
+                        set +e
+                        
+                        echo ""
+                        echo "=========================================="
+                        echo "[INFO] Starting branch deletion..."
+                        echo "=========================================="
+                        
+                        for repo in \$(echo "${params.repository}" | tr ',' ' ')
+                        do
+                            repo=\$(echo \$repo | xargs)
+                            [ -z "\$repo" ] && continue
+                            
+                            echo ""
+                            echo "[INFO] Processing repo: \$repo"
+                            echo "----------------------------------------"
+                            
+                            for branch in \$(echo "${params.branches_to_delete}" | tr ',' ' ')
+                            do
+                                branch=\$(echo \$branch | xargs)
+                                [ -z "\$branch" ] && continue
+                                
+                                echo "[INFO] Deleting branch: \$branch"
+                                
+                                # Delete branch using GitHub API
+                                response=\$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \\
+                                    -H "Authorization: token \${GITHUB_TOKEN}" \\
+                                    -H "Accept: application/vnd.github.v3+json" \\
+                                    "https://api.github.com/repos/${params.github_username}/\${repo}/git/refs/heads/\${branch}")
+                                
+                                if [ "\$response" == "204" ]; then
+                                    echo "[SUCCESS] Deleted branch: \$branch from \$repo"
+                                elif [ "\$response" == "422" ] || [ "\$response" == "404" ]; then
+                                    echo "[WARNING] Branch \$branch not found in \$repo (may already be deleted)"
+                                else
+                                    echo "[ERROR] Failed to delete branch \$branch from \$repo (HTTP: \$response)"
+                                fi
+                            done
+                        done
+                        
+                        echo ""
+                        echo "=========================================="
+                        echo "[INFO] Branch deletion completed!"
+                        echo "=========================================="
+                    """
+                }
+            }
+        }
     }
     
     post {
         always {
             cleanWs()
-            echo 'Backup process completed'
+            echo 'Process completed'
         }
         success {
-            echo 'Successfully backed up repositories to S3!'
+            echo 'Successfully backed up repositories and deleted branches!'
         }
         failure {
-            echo 'Failed to backup repositories.'
+            echo 'Process failed.'
         }
     }
 }
