@@ -13,11 +13,6 @@ pipeline {
             defaultValue: 'Layasri-B'
         )
         string(
-            name: 'branches_to_delete',
-            description: 'Branch names to delete after backup (comma separated). Leave empty to skip deletion.',
-            defaultValue: ''
-        )
-        string(
             name: 's3_bucket',
             description: 'S3 bucket name',
             defaultValue: 'repo-backup-s3'
@@ -53,6 +48,22 @@ pipeline {
                         error "s3_bucket parameter is required"
                     }
                 }
+            }
+        }
+        
+        stage('Install AWS CLI') {
+            steps {
+                sh """#!/bin/bash
+                    if ! command -v aws &> /dev/null; then
+                        echo "AWS CLI not found. Installing..."
+                        curl "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o "AWSCLIV2.pkg"
+                        sudo installer -pkg AWSCLIV2.pkg -target /
+                        rm AWSCLIV2.pkg
+                    else
+                        echo "AWS CLI already installed"
+                        aws --version
+                    fi
+                """
             }
         }
         
@@ -92,21 +103,11 @@ pipeline {
                             
                             git clone --mirror "https://${params.github_username}:\${GITHUB_TOKEN}@github.com/${params.github_username}/\${repo}.git"
                             
-                            if [ \$? -ne 0 ]; then
-                                echo "[ERROR] Failed to clone \${repo}"
-                                exit 1
-                            fi
-                            
                             tar -czf "\${repo}_\${backup_date}.tar.gz" "\${repo}.git"
                             
-                            aws s3 cp "\${repo}_\${backup_date}.tar.gz" "\${s3_path}/"
+                            /usr/local/bin/aws s3 cp "\${repo}_\${backup_date}.tar.gz" "\${s3_path}/" || aws s3 cp "\${repo}_\${backup_date}.tar.gz" "\${s3_path}/"
                             
-                            if [ \$? -ne 0 ]; then
-                                echo "[ERROR] Failed to upload \${repo} to S3"
-                                exit 1
-                            fi
-                            
-                            echo "[SUCCESS] Backup uploaded to: \${s3_path}/\${repo}_\${backup_date}.tar.gz"
+                            echo "[SUCCESS] Backup: \${s3_path}/\${repo}_\${backup_date}.tar.gz"
                             
                             rm -rf "\${repo}.git" "\${repo}_\${backup_date}.tar.gz"
                         done
@@ -117,92 +118,18 @@ pipeline {
                 }
             }
         }
-        
-        stage('Delete Specified Branches') {
-            when {
-                expression { return params.branches_to_delete?.trim() }
-            }
-            steps {
-                withCredentials([
-                    string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')
-                ]) {
-                    sh """#!/bin/bash
-                        set +e
-                        
-                        echo ""
-                        echo "=========================================="
-                        echo "[INFO] Starting branch deletion..."
-                        echo "=========================================="
-                        
-                        for repo in \$(echo "${params.repository}" | tr ',' ' ')
-                        do
-                            repo=\$(echo \$repo | xargs)
-                            [ -z "\$repo" ] && continue
-                            
-                            echo ""
-                            echo "[INFO] Processing repo: \$repo"
-                            
-                            for branch in \$(echo "${params.branches_to_delete}" | tr ',' ' ')
-                            do
-                                branch=\$(echo \$branch | xargs)
-                                [ -z "\$branch" ] && continue
-                                
-                                echo "[INFO] Deleting branch: \$branch"
-                                
-                                response=\$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \\
-                                    -H "Authorization: token \${GITHUB_TOKEN}" \\
-                                    -H "Accept: application/vnd.github.v3+json" \\
-                                    "https://api.github.com/repos/${params.github_username}/\${repo}/git/refs/heads/\${branch}")
-                                
-                                if [ "\$response" == "204" ]; then
-                                    echo "[SUCCESS] Deleted branch: \$branch"
-                                elif [ "\$response" == "422" ] || [ "\$response" == "404" ]; then
-                                    echo "[WARNING] Branch \$branch not found"
-                                else
-                                    echo "[ERROR] Failed to delete \$branch (HTTP: \$response)"
-                                fi
-                            done
-                        done
-                    """
-                }
-            }
-        }
-        
-        stage('List Backups in S3') {
-            steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'aws-credentials',
-                        usernameVariable: 'AWS_ACCESS_KEY_ID',
-                        passwordVariable: 'AWS_SECRET_ACCESS_KEY'
-                    )
-                ]) {
-                    sh """#!/bin/bash
-                        export AWS_ACCESS_KEY_ID="\${AWS_ACCESS_KEY_ID}"
-                        export AWS_SECRET_ACCESS_KEY="\${AWS_SECRET_ACCESS_KEY}"
-                        export AWS_DEFAULT_REGION="${params.aws_region}"
-                        
-                        echo ""
-                        echo "=========================================="
-                        echo "Backups in S3:"
-                        echo "=========================================="
-                        aws s3 ls "s3://${params.s3_bucket}/${params.s3_folder}/"
-                    """
-                }
-            }
-        }
     }
     
     post {
         always {
             cleanWs()
-            echo 'Process completed'
+            echo 'Backup process completed'
         }
         success {
-            echo 'Successfully backed up to S3!'
+            echo 'Successfully backed up repositories to S3!'
         }
         failure {
-            echo 'Process failed.'
+            echo 'Failed to backup repositories.'
         }
     }
 }
